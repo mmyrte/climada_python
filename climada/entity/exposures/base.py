@@ -128,24 +128,25 @@ class Exposures(GeoDataFrame):
 
     def check(self):
         """Check which variables are present"""
+        # make sure crs is set
+        if self.crs is None:
+            self.crs = DEF_CRS
+            LOGGER.info('crs set to default value: %s', DEF_CRS)
+
         # check metadata
         for var in self._metadata:
             if var[0] == '_':
-                continue
-            try:
-                if getattr(self, var) is None and var == 'crs':
-                    self.crs = DEF_CRS
-                    LOGGER.info('%s set to default value: %s', var, self.__dict__[var])
-            except AttributeError:
-                if var == 'tag':
-                    self.tag = Tag()
-                elif var == 'ref_year':
-                    self.ref_year = DEF_REF_YEAR
-                elif var == 'value_unit':
-                    self.value_unit = DEF_VALUE_UNIT
-                elif var == 'meta':
-                    self.meta = None
-                LOGGER.info('%s metadata set to default value: %s', var, self.__dict__[var])
+                continue  # ignore private metadata
+
+            if var == 'tag':
+                self.tag = Tag()
+            elif var == 'ref_year':
+                self.ref_year = DEF_REF_YEAR
+            elif var == 'value_unit':
+                self.value_unit = DEF_VALUE_UNIT
+            elif var == 'meta':
+                self.meta = None
+            LOGGER.info('%s metadata set to default value: %s', var, self.__dict__[var])
 
         for var in self.vars_oblig:
             if var not in self.columns:

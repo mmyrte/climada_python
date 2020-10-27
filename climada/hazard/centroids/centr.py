@@ -26,10 +26,12 @@ import numpy as np
 from scipy import sparse
 import h5py
 import pandas as pd
+import rasterio
 from rasterio import Affine
 from rasterio.warp import Resampling
 import geopandas as gpd
 from shapely.geometry.point import Point
+import pyproj
 
 import climada.util.plot as u_plot
 from climada.util.constants import (DEF_CRS,
@@ -153,8 +155,8 @@ class Centroids():
             and np.allclose(self.lat, centr.lat) \
             and np.allclose(self.lon, centr.lon)
 
-    @staticmethod
-    def from_base_grid(land=False, res_as=360, base_file=None):
+    @classmethod
+    def from_base_grid(cls, land=False, res_as=360, base_file=None):
         """Initialize from base grid data provided with CLIMADA
 
         Parameters:
@@ -165,7 +167,7 @@ class Centroids():
             base_file (str, optional): If set, read this file instead of one
                 provided with climada.
         """
-        centroids = Centroids()
+        centroids = cls()
 
         if base_file is None:
             base_file = NATEARTH_CENTROIDS[res_as]
@@ -177,8 +179,8 @@ class Centroids():
             centroids = centroids.select(reg_id=land_reg_ids)
         return centroids
 
-    @staticmethod
-    def from_geodataframe(gdf, geometry_alias='geom'):
+    @classmethod
+    def from_geodataframe(cls, gdf, geometry_alias='geom'):
         """Create Centroids instance from GeoDataFrame. The geometry, lat, and
         lon attributes are set from the GeoDataFrame.geometry attribute, while
         the columns are copied as attributes to the Centroids object in
@@ -203,7 +205,7 @@ class Centroids():
             geometry_alias (str, opt): Alternate name for the geometry column;
                 dropped to avoid duplicate assignment.
         """
-        centroids = Centroids()
+        centroids = cls()
 
         centroids.geometry = gdf.geometry
         centroids.lat = gdf.geometry.y.to_numpy(copy=True)
@@ -254,7 +256,7 @@ class Centroids():
         Parameters:
             points_bounds (tuple): points' lon_min, lat_min, lon_max, lat_max
             res (float): desired resolution in same units as points_bounds
-            crs (dict() or rasterio.crs.CRS, optional): CRS. Default: DEF_CRS
+            crs: passed on to geopandas.GeoSeries. Default: DEF_CRS
         """
         self.__init__()
         rows, cols, ras_trans = pts_to_raster_meta(points_bounds, (res, -res))
@@ -271,7 +273,7 @@ class Centroids():
         Parameters:
             lat (np.array): latitude
             lon (np.array): longitude
-            crs (dict() or rasterio.crs.CRS, optional): CRS. Default: DEF_CRS
+            crs: passed on to geopandas.GeoSeries. Default: DEF_CRS
         """
         self.__init__()
         self.lat, self.lon, self.geometry = lat, lon, gpd.GeoSeries(crs=crs)
@@ -524,10 +526,13 @@ class Centroids():
         self.set_geometry_points(scheduler)
         LOGGER.debug('Setting area_pixel %s points.', str(self.lat.size))
         xy_pixels = self.geometry.buffer(res / 2).envelope
-        is_cea = ('units' in self.geometry.crs
-                  and self.geometry.crs['units'] in ['m', 'metre', 'meter']
-                  or equal_crs(self.geometry.crs, {'proj': 'cea'}))
-        if is_cea:
+
+        is_equal_area = (
+            (self.geometry.crs.axis_info[0].unit_name == 'Meter'
+            and self.geometry.crs.axis_info[0].unit_name == 'Meter')
+            or self.geometry.crs == pyproj.CRS.from_dict({'proj': 'cea'})
+        )
+        if is_equal_area:
             self.area_pixel = xy_pixels.area.values
         else:
             self.area_pixel = xy_pixels.to_crs(crs={'proj': 'cea'}).area.values
@@ -557,10 +562,12 @@ class Centroids():
                                                      min_resol=min_resol))
             lat_unique = np.array(np.unique(self.lat))
             lon_unique_len = len(np.unique(self.lon))
-            is_cea = ('units' in self.geometry.crs
-                      and self.geometry.crs['units'] in ['m', 'metre', 'meter']
-                      or equal_crs(self.geometry.crs, {'proj': 'cea'}))
-            if is_cea:
+            is_equal_area = (
+                (self.geometry.crs.axis_info[0].unit_name == 'Meter'
+                and self.geometry.crs.axis_info[0].unit_name == 'Meter')
+                or self.geometry.crs == pyproj.CRS.from_dict({'proj': 'cea'})
+            )
+            if is_equal_area:
                 self.area_pixel = np.repeat(res_lat * res_lon, lon_unique_len)
                 return
 
@@ -753,7 +760,11 @@ class Centroids():
                             data=[value.a, value.b, value.c, value.d, value.e, value.f],
                             dtype=float)
         hf_str = data.create_dataset('crs', (1,), dtype=str_dt)
-        hf_str[0] = str(dict(self.crs))
+        if isinstance(self.crs, (rasterio.crs.CRS, dict)):
+            # rasterio and geopandas/pyproj use different CRS objects
+            hf_str[0] = pyproj.crs.CRS.from_user_input(self.crs).to_string()
+        else:
+            hf_str[0] = self.crs.to_string()
 
         if isinstance(file_data, str):
             data.close()
@@ -771,16 +782,20 @@ class Centroids():
         else:
             data = file_data
         self.clear()
-        crs = DEF_CRS
+        crs = pyproj.CRS.from_dict(DEF_CRS)
         if data.get('crs'):
-            crs = ast.literal_eval(data.get('crs')[0])
+            crs = pyproj.CRS.from_user_input(data.get('crs')[0])
         if data.get('lat') and data.get('lat').size:
-            self.set_lat_lon(np.array(data.get('lat')), np.array(data.get('lon')), crs)
+            self.set_lat_lon(np.array(data.get('lat')),
+                             np.array(data.get('lon')),
+                             crs)
         elif data.get('latitude') and data.get('latitude').size:
-            self.set_lat_lon(np.array(data.get('latitude')), np.array(data.get('longitude')), crs)
+            self.set_lat_lon(np.array(data.get('latitude')),
+                             np.array(data.get('longitude')),
+                             crs)
         else:
             centr_meta = data.get('meta')
-            self.meta['crs'] = crs
+            self.meta['crs'] = rasterio.crs.CRS.from_user_input(crs)
             for key, value in centr_meta.items():
                 if key != 'transform':
                     self.meta[key] = value[0]
