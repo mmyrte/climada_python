@@ -148,7 +148,7 @@ class TCForecast(TCTracks):
             remotefiles = fnmatch.filter(con.nlst(), '*tropical_cyclone*')
             if len(remotefiles) == 0:
                 msg = 'No tracks found at ftp://{}/{}'
-                msg.format(ECMWF_FTP, remote_dir)
+                msg = msg.format(ECMWF_FTP, remote_dir)
                 raise FileNotFoundError(msg)
 
             localfiles = []
